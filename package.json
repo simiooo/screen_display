@@ -1,8 +1,7 @@
 {
   "name": "render-to-display",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "",
-  "main": "dist/main.js",
   "types": "dist/main.d.ts",
   "type": "module",
   "scripts": {
@@ -28,16 +27,22 @@
     "node-addon-api": "^8.3.0",
     "node-gyp": "^11.0.0",
     "rollup": "^4.31.0",
+    "rollup-plugin-clear": "^2.0.7",
     "tslib": "^2.8.1",
     "tsx": "^4.19.2"
   },
   "exports": {
     ".": {
-      "require": "./dist/main.cjs"
+      "require": "./dist/main.cjs",
+      "import": "./dist/main.mjs"
     }
   },
+  "imports": {
+    "#render2display_addon": "./build/Release/render2display.node"
+  },
+  "main": "./dist/main.cjs",
   "devDependencies": {
-    "@types/chai": "^5.0.1", 
+    "@types/chai": "^5.0.1",
     "@types/mocha": "^10.0.10",
     "chai": "^5.1.2",
     "mocha": "^11.1.0"
