@@ -7,6 +7,7 @@
   "type": "module",
   "scripts": {
     "test": "mocha -r tsx test/**/*.test.ts",
+    "prebuild:cpp": "node-gyp clean && node-gyp configure",
     "build:cpp": "node-gyp clean && node-gyp configure && node-gyp build",
     "build:cpp_ia32": "node-gyp rebuild --target_arch=ia32",
     "build:cpp_x64": "node-gyp rebuild --target_arch=x64",

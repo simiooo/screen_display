@@ -31,12 +31,19 @@ jobs:
       run: |
         choco install -y python visualstudio2022-workload-vctools
         choco install -y windows-sdk-10.0
-        
+    
+    - name: Install Package Management
+      run: |
+        corepack enable
+        corepack use pnpm@9.14.4
+
     - name: Install dependencies
       run: pnpm install
       
     - name: Build for ${{ matrix.arch }}
-      run: pnpm run build:cpp_${{ matrix.arch }}
+      run: |
+        pnpm prebuild:cpp
+        pnpm run build:cpp_${{ matrix.arch }}
       
     - name: Build TypeScript
       run: pnpm run build:ts
