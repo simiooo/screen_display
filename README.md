@@ -28,9 +28,6 @@ const { Direct2DDisplay, FontWeight } = require('direct2d-display');
 // 创建实例
 const display = new Direct2DDisplay();
 
-// 获取显示器信息
-const displays = display.getDisplays();
-console.log('可用显示器:', displays);
 
 // 启动渲染
 display.start(0); // 使用第一个显示器
