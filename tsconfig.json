@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "esnext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declaration": true,
+    "sourceMap": true,
+    "types": ["node", "mocha"],
+    "lib": ["ES2020", "DOM"]
+  },
+  "include": ["src/**/*", "test/**/*", "build/Release/*.node"],
+  "exclude": ["node_modules"]
+}

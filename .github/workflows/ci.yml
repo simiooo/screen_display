@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [ia32, x64, arm64]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        architecture: ${{ matrix.arch }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install Windows build tools
+      run: |
+        choco install -y python visualstudio2022-workload-vctools
+        choco install -y windows-sdk-10.0
+        
+    - name: Install dependencies
+      run: pnpm install
+      
+    - name: Build for ${{ matrix.arch }}
+      run: pnpm run build:cpp_${{ matrix.arch }}
+      
+    - name: Build TypeScript
+      run: pnpm run build:ts
+      
+    - name: Run tests
+      run: pnpm test
+      
+  publish:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        registry-url: https://registry.npmjs.org/
+        
+    - name: Install dependencies
+      run: pnpm install
+      
+    - name: Build
+      run: pnpm run build
+      
+    - name: Publish package
+      run: npm publish
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

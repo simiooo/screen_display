@@ -1,0 +1,44 @@
+{
+  "name": "screen_display",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/main.js",
+  "types": "dist/main.d.ts",
+  "type": "module",
+  "scripts": {
+    "test": "mocha -r tsx test/**/*.test.ts",
+    "build:cpp": "node-gyp clean && node-gyp configure && node-gyp build",
+    "build:cpp_ia32": "node-gyp rebuild --target_arch=ia32",
+    "build:cpp_x64": "node-gyp rebuild --target_arch=x64",
+    "build:cpp_arm64": "node-gyp rebuild --target_arch=arm64",
+    "build": "pnpm build:cpp && rollup -c",
+    "build:ts": "rollup -c",
+    "prepublish": "pnpm run build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@rollup/plugin-alias": "^5.1.1",
+    "@rollup/plugin-commonjs": "^28.0.2",
+    "@rollup/plugin-node-resolve": "^16.0.0",
+    "@rollup/plugin-typescript": "^12.1.2",
+    "@types/node": "^22.10.9",
+    "node-addon-api": "^8.3.0",
+    "node-gyp": "^11.0.0",
+    "rollup": "^4.31.0",
+    "tslib": "^2.8.1",
+    "tsx": "^4.19.2"
+  },
+  "exports": {
+    ".": {
+      "require": "./dist/main.cjs"
+    }
+  },
+  "devDependencies": {
+    "@types/chai": "^5.0.1",
+    "@types/mocha": "^10.0.10",
+    "chai": "^5.1.2",
+    "mocha": "^11.1.0"
+  }
+}
