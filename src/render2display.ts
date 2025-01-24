@@ -14,38 +14,24 @@ declare module 'render2display_addon' {
 
   export class Direct2DDisplay {
     constructor();
-    
+
     /**
-     * 启动文本渲染
-     * @param text 初始显示文本
-     * @param displayIndex 可选显示器索引 (默认为 0)
-     * @throws 当显示器索引无效时抛出错误
+     * 启动渲染线程
+     * @param displayIndex 显示器索引 (默认为0)
      */
-    start(text: string, displayIndex?: number): boolean;
+    start(displayIndex?: number): void;
 
     /**
      * 停止渲染并清理资源
      */
-    stop(): boolean;
+    stop(): void;
 
     /**
-     * 更新显示文本内容
-     * @param text 新的文本内容 (UTF-8 格式)
+     * 更新所有渲染参数
+     * @param x 水平坐标
+     * @param y 垂直坐标
+     * @param text 显示文本
      */
-    updateText(text: string): void;
-
-    /**
-     * 更新文本位置
-     * @param x 水平坐标 (相对于显示器左上角)
-     * @param y 垂直坐标 (相对于显示器左上角)
-     */
-    updatePosition(x: number, y: number): void;
-
-    /**
-     * 更新文本样式
-     * @param fontSize 字体大小（像素）
-     * @param weight 字体粗细（使用 FontWeight 枚举）
-     */
-    updateStyle(fontSize: number, weight: FontWeight): void;
+    updateAll(x: number, y: number, text: string): void;
   }
 }

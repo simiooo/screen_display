@@ -1,25 +1,22 @@
-const { Direct2DDisplay } = require('../dist/main.cjs') ;
-console.log(Direct2DDisplay)
+const { Direct2DDisplay } = require('../dist/main.cjs');
+
+// 创建实例
 const display = new Direct2DDisplay();
 
 // 启动渲染
-display.start("Direct2D 演示", 0);
+display.start(0); // 使用第一个显示器
 
-// 动态更新位置和内容
+// 初始显示
+display.updateAll(100, 200, "Direct2D 演示");
+
+// 动态更新
 let angle = 0;
 setInterval(() => {
   angle += 0.1;
   const x = 500 + Math.sin(angle) * 200;
   const y = 300 + Math.cos(angle) * 100;
-  
-  display.updatePosition(x, y);
-  display.updateText(`坐标: (${x.toFixed(1)}, ${y.toFixed(1)})`);
+  display.updateAll(x, y, `坐标: (${x.toFixed(1)}, ${y.toFixed(1)})`);
 }, 16);
-
-// 5秒后修改样式
-setTimeout(() => {
-  display.updateStyle(24, 400); // 恢复普通样式
-}, 5000);
 
 // 安全退出
 process.on('SIGINT', () => {

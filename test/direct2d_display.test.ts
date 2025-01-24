@@ -1,8 +1,10 @@
-import { Direct2DDisplay } from '../src/main';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { Direct2DDisplay } = require('../dist/main');
 import { expect } from 'chai';
 
 describe('Direct2DDisplay', () => {
-  let display: Direct2DDisplay;
+  let display: typeof Direct2DDisplay;
 
   beforeEach(() => {
     display = new Direct2DDisplay();
@@ -13,76 +15,55 @@ describe('Direct2DDisplay', () => {
   });
 
   describe('#start()', () => {
-    it('should initialize display with default text', () => {
-      const result = display.start("Test Text");
+    it('should initialize display', () => {
+      const result = display.start(0);
       expect(result).to.be.true;
     });
 
-    it('should initialize display on specified monitor', () => {
-      const result = display.start("Test Text", 0);
-      expect(result).to.be.true;
+    it('should throw for invalid monitor index', () => {
+      expect(() => display.start(-1)).to.throw('Invalid monitor index');
     });
 
-    it('should return false for invalid monitor index', () => {
-      const result = display.start("Test Text", -1);
-      expect(result).to.be.false;
-    });
-  });
-
-  describe('#updateText()', () => {
-    it('should update displayed text', () => {
-      display.start("Initial Text");
-      display.updateText("Updated Text");
-      // Add assertions for text update verification
-    });
-
-    it('should handle empty string', () => {
-      display.start("Initial Text");
-      display.updateText("");
-      // Add assertions for empty text verification
+    it('should throw when already started', () => {
+      display.start(0);
+      expect(() => display.start(0)).to.throw('Display already started');
     });
   });
 
-  describe('#updatePosition()', () => {
-    it('should update text position', () => {
-      display.start("Test Text");
-      display.updatePosition(100, 200);
-      // Add assertions for position verification
+  describe('#updateAll()', () => {
+    it('should update all parameters', () => {
+      display.start(0);
+      display.updateAll(100, 200, "Test Text");
+      // Add assertions for parameter verification
     });
 
-    it('should handle negative coordinates', () => {
-      display.start("Test Text");
-      display.updatePosition(-100, -200);
-      // Add assertions for negative position verification
-    });
-  });
-
-  describe('#updateStyle()', () => {
-    it('should update text style', () => {
-      display.start("Test Text");
-      display.updateStyle(32, 400);
-      // Add assertions for style verification
+    it('should throw when not started', () => {
+      expect(() => display.updateAll(100, 200, "Test Text"))
+        .to.throw('Display not started');
     });
 
-    it('should handle invalid font weights', () => {
-      display.start("Test Text");
-      display.updateStyle(32, 950); // Invalid weight
-      // Add assertions for invalid weight handling
+    it('should throw for invalid text', () => {
+      display.start(0);
+      expect(() => display.updateAll(100, 200, ""))
+        .to.throw('Text cannot be empty');
     });
   });
 
   describe('#stop()', () => {
     it('should stop display', () => {
-      display.start("Test Text");
+      display.start(0);
       const result = display.stop();
       expect(result).to.be.true;
     });
 
+    it('should throw when not started', () => {
+      expect(() => display.stop()).to.throw('Display not started');
+    });
+
     it('should handle multiple stop calls', () => {
-      display.start("Test Text");
+      display.start(0);
       display.stop();
-      const result = display.stop();
-      expect(result).to.be.false;
+      expect(() => display.stop()).to.throw('Display already stopped');
     });
   });
 });

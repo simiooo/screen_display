@@ -6,8 +6,8 @@
 #include <string>
 #include <thread>
 #include <mutex>
-#include <stdexcept>
-#include <memory>
+#include <atomic>
+#include <chrono>
 
 struct DisplayInfo {
     int index;
@@ -15,76 +15,42 @@ struct DisplayInfo {
     HMONITOR hMonitor;
 };
 
-// std::vector<DisplayInfo> displays;
-ID2D1Factory* pD2DFactory = nullptr;
-IDWriteFactory* pDWriteFactory = nullptr;
-
-// 添加一个结构体来存储文字渲染的配置
-struct TextRenderConfig {
-    std::wstring text;
-    float x;
-    float y;
-    float fontSize;
-    DWRITE_FONT_WEIGHT fontWeight;
-    D2D1::ColorF color;
-    bool needsUpdate;
-
-    // 添加默认构造函数
-    TextRenderConfig() : 
-        text(L""),
-        x(0.0f),
-        y(0.0f),
-        fontSize(48.0f),
-        fontWeight(DWRITE_FONT_WEIGHT_BOLD),
-        color(D2D1::ColorF::White),
-        needsUpdate(true) {}
-};
-
-
-
 class Direct2DDisplay : public Napi::ObjectWrap<Direct2DDisplay> {
 private:
-    struct TextRenderConfig {
+    struct RenderConfig {
         std::wstring text;
-        float x;
-        float y;
-        float fontSize;
-        DWRITE_FONT_WEIGHT fontWeight;
-        D2D1::ColorF color;
-        bool needsUpdate;
-
-        // 添加默认构造函数
-        TextRenderConfig() : 
-            text(L""),
-            x(0.0f),
-            y(0.0f),
-            fontSize(48.0f),
-            fontWeight(DWRITE_FONT_WEIGHT_BOLD),
-            color(D2D1::ColorF::White),
-            needsUpdate(true) {}
+        float x = 0.0f;
+        float y = 0.0f;
+        float fontSize = 48.0f;
+        DWRITE_FONT_WEIGHT fontWeight = DWRITE_FONT_WEIGHT_BOLD;
+        bool fontDirty = true;
     };
 
-    // 成员变量
-    std::vector<DisplayInfo> displays;
-    ID2D1Factory* pD2DFactory;
-    IDWriteFactory* pDWriteFactory;
-    ID2D1HwndRenderTarget* pRenderTarget;
-    IDWriteTextFormat* pTextFormat;
-    ID2D1SolidColorBrush* pBrush;
-    HWND hwnd;
-    bool isRunning;
-    TextRenderConfig config;
-    std::thread renderThread;
+    // 双缓冲配置
+    RenderConfig frontConfig;  // 渲染线程使用
+    RenderConfig backConfig;   // JS线程更新
     std::mutex configMutex;
+    std::atomic<bool> configDirty{false};
+
+    // Direct2D 资源
+    ID2D1Factory* pD2DFactory = nullptr;
+    IDWriteFactory* pDWriteFactory = nullptr;
+    ID2D1HwndRenderTarget* pRenderTarget = nullptr;
+    IDWriteTextFormat* pTextFormat = nullptr;
+    ID2D1SolidColorBrush* pBrush = nullptr;
+    
+    // 窗口和状态
+    HWND hwnd = nullptr;
+    std::vector<DisplayInfo> displays;
+    std::thread renderThread;
+    std::atomic<bool> isRunning{false};
 
 public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports) {
         Napi::Function func = DefineClass(env, "Direct2DDisplay", {
             InstanceMethod("start", &Direct2DDisplay::Start),
             InstanceMethod("stop", &Direct2DDisplay::Stop),
-            InstanceMethod("updateText", &Direct2DDisplay::UpdateText),
-            InstanceMethod("updatePosition", &Direct2DDisplay::UpdatePosition),
-            InstanceMethod("updateStyle", &Direct2DDisplay::UpdateStyle),
+            InstanceMethod("updateAll", &Direct2DDisplay::UpdateAll),
         });
 
         Napi::FunctionReference* constructor = new Napi::FunctionReference();
@@ -99,204 +65,81 @@ public:
         : Napi::ObjectWrap<Direct2DDisplay>(info) {
         Napi::Env env = info.Env();
         
-        // 初始化COM和D2D
+        // 初始化 COM 和 Direct2D
         CoInitialize(nullptr);
         D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pD2DFactory);
-        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&pDWriteFactory);
-        
-        // 使用直接赋值而不是初始化列表
-        config.text = L"";
-        config.x = 0.0f;
-        config.y = 0.0f;
-        config.fontSize = 48.0f;
-        config.fontWeight = DWRITE_FONT_WEIGHT_BOLD;
-        config.color = D2D1::ColorF(D2D1::ColorF::White);
-        config.needsUpdate = true;
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), 
+                          reinterpret_cast<IUnknown**>(&pDWriteFactory));
 
-        isRunning = false;
-        pRenderTarget = nullptr;
-        pTextFormat = nullptr;
-        pBrush = nullptr;
-        hwnd = nullptr;
+        // 创建默认画笔颜色
+        if (pD2DFactory && SUCCEEDED(pD2DFactory->CreateHwndRenderTarget(
+            D2D1::RenderTargetProperties(),
+            D2D1::HwndRenderTargetProperties(GetConsoleWindow(), D2D1::SizeU(1,1)),
+            &pRenderTarget))) {
+            pRenderTarget->CreateSolidColorBrush(
+                D2D1::ColorF(D2D1::ColorF::White), &pBrush);
+        }
     }
 
     ~Direct2DDisplay() {
-        // 修复 CallbackInfo 构造
-        if (isRunning) {
-            isRunning = false;
-            if (renderThread.joinable()) {
-                renderThread.join();
-            }
-        }
-        
-        if (pBrush) pBrush->Release();
-        if (pTextFormat) pTextFormat->Release();
-        if (pRenderTarget) pRenderTarget->Release();
-        if (pDWriteFactory) pDWriteFactory->Release();
-        if (pD2DFactory) pD2DFactory->Release();
+        Stop(Napi::CallbackInfo(Env(), {})); // 清理线程
+        CleanupResources();
         CoUninitialize();
     }
 
 private:
-    static BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM lParam) {
-        Direct2DDisplay* instance = reinterpret_cast<Direct2DDisplay*>(lParam);
-        MONITORINFOEX info;
+    void CleanupResources() {
+        if (pBrush) { pBrush->Release(); pBrush = nullptr; }
+        if (pTextFormat) { pTextFormat->Release(); pTextFormat = nullptr; }
+        if (pRenderTarget) { pRenderTarget->Release(); pRenderTarget = nullptr; }
+        if (pDWriteFactory) { pDWriteFactory->Release(); pDWriteFactory = nullptr; }
+        if (pD2DFactory) { pD2DFactory->Release(); pD2DFactory = nullptr; }
+        if (hwnd) { DestroyWindow(hwnd); hwnd = nullptr; }
+    }
+    // 显示器枚举回调
+    static BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC, LPRECT rect, LPARAM self) {
+        auto* instance = reinterpret_cast<Direct2DDisplay*>(self);
+        MONITORINFOEX info{};
         info.cbSize = sizeof(MONITORINFOEX);
         GetMonitorInfo(hMonitor, &info);
-        
-        DisplayInfo di;
-        di.index = instance->displays.size();
-        di.hMonitor = hMonitor;
-        di.rect = info.rcMonitor;
-        instance->displays.push_back(di); // 添加到实例的 displays 成员中
-        
+
+        instance->displays.push_back({
+            static_cast<int>(instance->displays.size()),
+            info.rcMonitor,
+            hMonitor
+        });
         return TRUE;
     }
-    Napi::Value Start(const Napi::CallbackInfo& info) {
-        Napi::Env env = info.Env();
-        
-        if (isRunning) {
-            return Napi::Boolean::New(env, true);
-        }
 
-        // 解析参数
-        if (info.Length() < 1) {
-            Napi::Error::New(env, "Initial text is required").ThrowAsJavaScriptException();
-            return env.Null();
-        }
-
-        std::string text = info[0].As<Napi::String>();
-        int displayIndex = info.Length() > 1 ? info[1].As<Napi::Number>() : 0;
-
-        // 设置初始文本
-        {
-            std::lock_guard<std::mutex> lock(configMutex);
-            config.text = std::wstring(text.begin(), text.end());
-        }
-
-        // 枚举显示器
-        displays.clear();
-        EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, (LPARAM)this);
-        
-        if (displayIndex >= displays.size()) {
-            Napi::Error::New(env, "Invalid display index").ThrowAsJavaScriptException();
-            return env.Null();
-        }
-
-        // 创建渲染线程
-        isRunning = true;
-        renderThread = std::thread(&Direct2DDisplay::RenderLoop, this, displayIndex);
-
-        return Napi::Boolean::New(env, true);
-    }
-
-    
-
-    Napi::Value Stop(const Napi::CallbackInfo& info) {
-        if (isRunning) {
-            isRunning = false;
-            if (renderThread.joinable()) {
-                renderThread.join();
-            }
-        }
-
-        return Napi::Boolean::New(info.Env(), true);
-    }
-
-    Napi::Value UpdateText(const Napi::CallbackInfo& info) {
-        Napi::Env env = info.Env();
-        if (info.Length() < 1) return env.Null();
-
-        std::string utf8Text = info[0].As<Napi::String>();
-
-        // 将 UTF-8 转换为 UTF-16
-    int wideLen = MultiByteToWideChar(CP_UTF8, 0, utf8Text.c_str(), -1, nullptr, 0);
-    std::wstring utf16Text(wideLen, 0);
-    MultiByteToWideChar(CP_UTF8, 0, utf8Text.c_str(), -1, &utf16Text[0], wideLen);
-        {
-            std::lock_guard<std::mutex> lock(configMutex);
-            config.text = utf16Text;
-            config.needsUpdate = true;
-        }
-        return env.Undefined();
-    }
-
-    Napi::Value UpdatePosition(const Napi::CallbackInfo& info) {
-        Napi::Env env = info.Env();
-        if (info.Length() < 2) return env.Null();
-
-        float x = info[0].As<Napi::Number>().FloatValue();
-        float y = info[1].As<Napi::Number>().FloatValue();
-        {
-            std::lock_guard<std::mutex> lock(configMutex);
-            config.x = x;
-            config.y = y;
-            config.needsUpdate = true;
-        }
-        return env.Undefined();
-    }
-
-    Napi::Value UpdateStyle(const Napi::CallbackInfo& info) {
-        Napi::Env env = info.Env();
-        if (info.Length() < 2) return env.Null();
-
-        float fontSize = info[0].As<Napi::Number>().FloatValue();
-        int weight = info[1].As<Napi::Number>().Int32Value();
-        {
-            std::lock_guard<std::mutex> lock(configMutex);
-            config.fontSize = fontSize;
-            config.fontWeight = static_cast<DWRITE_FONT_WEIGHT>(weight);
-            config.needsUpdate = true;
-        }
-        return env.Undefined();
-    }
-
-    void RenderLoop(int displayIndex) {
-        // 创建窗口和初始化D2D资源
-        InitializeWindow(displayIndex);
-        
-        MSG msg = {0};
-        while (isRunning) {
-            if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
-
-            std::lock_guard<std::mutex> lock(configMutex);
-            if (config.needsUpdate) {
-                UpdateTextFormat();
-                config.needsUpdate = false;
-            }
-
-            Render();
-            Sleep(16); // ~60 FPS
-        }
-
-        // 清理资源
-        CleanupResources();
-    }
-
+    // 窗口创建和初始化
     void InitializeWindow(int displayIndex) {
-        RECT displayRect = displays[displayIndex].rect;
-        
-        // 创建窗口类
-        WNDCLASSEXW wc = {0};
-        wc.cbSize = sizeof(WNDCLASSEXW);
-        wc.lpfnWndProc = DefWindowProcW;
+        displays.clear();
+        EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, reinterpret_cast<LPARAM>(this));
+
+        if (displayIndex >= displays.size()) {
+            throw std::runtime_error("Invalid display index");
+        }
+
+        const auto& display = displays[displayIndex];
+        const wchar_t CLASS_NAME[] = L"D2DOverlayWindow";
+
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(WNDCLASSEX);
+        wc.lpfnWndProc = DefWindowProc;
         wc.hInstance = GetModuleHandle(nullptr);
-        wc.lpszClassName = L"D2DDisplayWindow";
+        wc.lpszClassName = CLASS_NAME;
         RegisterClassExW(&wc);
-        
-        // 创建窗口
+
+        // 使用WS_EX_LAYERED实现透明效果
         hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
-            L"D2DDisplayWindow",
-            L"Direct2D Display",
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            CLASS_NAME,
+            nullptr,
             WS_POPUP,
-            displayRect.left,
-            displayRect.top,
-            displayRect.right - displayRect.left,
-            displayRect.bottom - displayRect.top,
+            display.rect.left,
+            display.rect.top,
+            display.rect.right - display.rect.left,
+            display.rect.bottom - display.rect.top,
             nullptr,
             nullptr,
             GetModuleHandle(nullptr),
@@ -304,145 +147,179 @@ private:
         );
 
         if (!hwnd) {
-            throw std::runtime_error("Failed to create window");
+            throw std::runtime_error("Window creation failed");
         }
 
-        // 设置窗口透明
-        SetLayeredWindowAttributes(hwnd, RGB(0,0,0), 0, LWA_COLORKEY);
-        ShowWindow(hwnd, SW_SHOW);
+        // 配置窗口透明属性
+        SetLayeredWindowAttributes(hwnd, 0, int(255 * 0.2), LWA_ALPHA);
+        ShowWindow(hwnd, SW_SHOWNA);
 
         // 创建D2D渲染目标
-        D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties();
-        D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
-            hwnd,
-            D2D1::SizeU(
-                displayRect.right - displayRect.left,
-                displayRect.bottom - displayRect.top
-            )
+        D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps{};
+        hwndProps.hwnd = hwnd;
+        hwndProps.pixelSize = D2D1::SizeU(
+            display.rect.right - display.rect.left,
+            display.rect.bottom - display.rect.top
         );
+        hwndProps.presentOptions = D2D1_PRESENT_OPTIONS_IMMEDIATELY;
 
-        HRESULT hr = pD2DFactory->CreateHwndRenderTarget(
-            props,
+        pD2DFactory->CreateHwndRenderTarget(
+            D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)),
             hwndProps,
             &pRenderTarget
         );
 
-        if (FAILED(hr)) {
-            throw std::runtime_error("Failed to create render target");
-        }
-
-        // 创建画笔
-        hr = pRenderTarget->CreateSolidColorBrush(
-            config.color,
-            &pBrush
-        );
-
-        if (FAILED(hr)) {
-            throw std::runtime_error("Failed to create brush");
-        }
-
-        // 初始化文本格式
-        UpdateTextFormat();
+        // 创建默认画笔
+        pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &pBrush);
+        RecreateTextFormat(frontConfig.fontSize, frontConfig.fontWeight);
     }
 
-    void UpdateTextFormat() {
-        // 释放旧的文本格式
-        if (pTextFormat) {
-            pTextFormat->Release();
-            pTextFormat = nullptr;
-        }
-
-        // 创建新的文本格式
-        HRESULT hr = pDWriteFactory->CreateTextFormat(
-            L"Arial",                    // fontFamilyName
-            nullptr,                     // fontCollection
-            config.fontWeight,           // fontWeight
-            DWRITE_FONT_STYLE_NORMAL,    // fontStyle
-            DWRITE_FONT_STRETCH_NORMAL,  // fontStretch
-            config.fontSize,             // fontSize
-            L"",                         // localeName
+    // 字体资源管理
+    void RecreateTextFormat(float fontSize, DWRITE_FONT_WEIGHT weight) {
+        if (pTextFormat) pTextFormat->Release();
+        
+        pDWriteFactory->CreateTextFormat(
+            L"Arial",
+            nullptr,
+            weight,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            fontSize,
+            L"",
             &pTextFormat
         );
 
-        if (FAILED(hr)) {
-            throw std::runtime_error("Failed to create text format");
+        if (pTextFormat) {
+            pTextFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            pTextFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
         }
-
-        // 设置文本对齐方式
-        pTextFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        pTextFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     }
 
-    void Render() {
-        if (!pRenderTarget || !pTextFormat || !pBrush) {
-            return;
+    // 渲染循环核心逻辑
+    void RenderLoop(int displayIndex) {
+        try {
+            InitializeWindow(displayIndex);
+            auto lastFrameTime = std::chrono::steady_clock::now();
+            
+            MSG msg{};
+            while (isRunning) {
+                // 处理窗口消息
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+
+                // 双缓冲配置交换
+                if (configDirty.exchange(false)) {
+                    std::lock_guard<std::mutex> lock(configMutex);
+                    frontConfig = backConfig;
+                    
+                    if (frontConfig.fontDirty) {
+                        RecreateTextFormat(frontConfig.fontSize, frontConfig.fontWeight);
+                        frontConfig.fontDirty = false;
+                    }
+                }
+
+                // 精确帧率控制
+                const auto now = std::chrono::steady_clock::now();
+                const auto elapsed = now - lastFrameTime;
+                if (elapsed < std::chrono::milliseconds(16)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+
+                RenderFrame();
+                lastFrameTime = now;
+            }
+        } catch (...) {
+            isRunning = false;
         }
+        CleanupResources();
+    }
+
+    // 单帧渲染实现
+    void RenderFrame() {
+        if (!pRenderTarget || !pTextFormat || !pBrush) return;
 
         pRenderTarget->BeginDraw();
-        pRenderTarget->Clear(D2D1::ColorF(0, 0, 0, 0)); // 透明背景
+        pRenderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
-        // 获取渲染目标大小
-        D2D1_SIZE_F size = pRenderTarget->GetSize();
+        // 计算文本布局边界
+        const D2D1_SIZE_F rtSize = pRenderTarget->GetSize();
+        const float maxWidth = rtSize.width - frontConfig.x;
+        const float maxHeight = rtSize.height - frontConfig.y;
 
-        // 创建文本布局矩形
-        D2D1_RECT_F layoutRect = D2D1::RectF(
-            config.x,
-            config.y,
-            config.x + size.width,
-            config.y + size.height
+        const D2D1_RECT_F textRect = D2D1::RectF(
+            frontConfig.x,
+            frontConfig.y,
+            frontConfig.x + maxWidth,
+            frontConfig.y + maxHeight
         );
 
-        // 绘制文本
+        // 执行文本绘制
         pRenderTarget->DrawText(
-            config.text.c_str(),
-            config.text.length(),
+            frontConfig.text.c_str(),
+            static_cast<UINT32>(frontConfig.text.length()),
             pTextFormat,
-            layoutRect,
+            textRect,
             pBrush
         );
 
-        // 结束绘制
-        HRESULT hr = pRenderTarget->EndDraw();
-
-        // 如果设备丢失，尝试重新创建资源
+        // 处理设备丢失
+        const HRESULT hr = pRenderTarget->EndDraw();
         if (hr == D2DERR_RECREATE_TARGET) {
-            CleanupD2DResources();
-            InitializeWindow(0); // 重新初始化，使用默认显示器
+            CleanupResources();
+            InitializeWindow(0); // 尝试恢复渲染目标
         }
     }
 
-    void CleanupD2DResources() {
-        if (pBrush) {
-            pBrush->Release();
-            pBrush = nullptr;
-        }
-        if (pTextFormat) {
-            pTextFormat->Release();
-            pTextFormat = nullptr;
-        }
-        if (pRenderTarget) {
-            pRenderTarget->Release();
-            pRenderTarget = nullptr;
-        }
+    // JavaScript 接口方法
+    Napi::Value Start(const Napi::CallbackInfo& info) {
+        if (isRunning) return info.Env().Undefined();
+
+        const int displayIndex = info.Length() > 0 ? info[0].As<Napi::Number>().Int32Value() : 0;
+        isRunning = true;
+        renderThread = std::thread(&Direct2DDisplay::RenderLoop, this, displayIndex);
+        return info.Env().Undefined();
     }
 
-    void CleanupResources() {
-        CleanupD2DResources();
-        if (hwnd) {
-            DestroyWindow(hwnd);
-            hwnd = nullptr;
+    Napi::Value Stop(const Napi::CallbackInfo& info) {
+        isRunning = false;
+        if (renderThread.joinable()) {
+            renderThread.join();
         }
+        CleanupResources();
+        return info.Env().Undefined();
     }
 
-    // 添加一个辅助方法用于错误处理
-    static void ThrowIfFailed(HRESULT hr, const char* message) {
-        if (FAILED(hr)) {
-            throw std::runtime_error(message);
+    Napi::Value UpdateAll(const Napi::CallbackInfo& info) {
+        if (info.Length() < 3) return info.Env().Undefined();
+
+        // 从JavaScript获取参数
+        const float x = info[0].As<Napi::Number>().FloatValue();
+        const float y = info[1].As<Napi::Number>().FloatValue();
+        const std::string text = info[2].As<Napi::String>();
+
+        // 转换文本编码
+        const int bufferSize = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+        std::wstring wtext(bufferSize, 0);
+        MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wtext.data(), bufferSize);
+
+        // 更新后台配置
+        {
+            std::lock_guard<std::mutex> lock(configMutex);
+            backConfig.x = x;
+            backConfig.y = y;
+            backConfig.text = std::move(wtext);
+            configDirty = true;
         }
+
+        return info.Env().Undefined();
     }
 };
 
-// 修复 NODE_API_MODULE 宏的使用
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     return Direct2DDisplay::Init(env, exports);
 }
